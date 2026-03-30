@@ -1,5 +1,8 @@
 import logging
 import os
+import json
+import asyncio
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application,
@@ -16,6 +19,12 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")       # Токен от @BotFather
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@PromoRadar_WB")       # @username или числовой ID канала
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/PromoRadar_WB")  # Ссылка на канал
+
+# Интервал рассылки в секундах (3 часа = 10800 секунд)
+MAILING_INTERVAL = int(os.getenv("MAILING_INTERVAL", "10800"))
+
+# Файл для хранения ID пользователей
+USERS_FILE = "users.json"
 
 # ============================================================
 #  ТЕКСТЫ СООБЩЕНИЙ (HTML-разметка)
@@ -80,6 +89,21 @@ MENU_TEXT = """
 """
 
 # ============================================================
+#  📬 ТЕКСТ АВТОМАТИЧЕСКОЙ РАССЫЛКИ (каждые 3 часа)
+# ============================================================
+MAILING_TEXT = """
+<a href="https://flagmanway61.com/c8ffaea0c">FLAGMAN</a> — твой игровой рай с фриспинами, щедрыми бонусами и настоящими джекпотами🔥
+
+🎁 <b>Welcome Pack:</b>
+
+💸 <b>+125%</b> к первому депозиту — начни с бонусом!
+
+🎰 <b>600 FS</b> за второе пополнение — крути без ограничений!
+
+💰 <b>+125%</b> к третьему депозиту — удвой свой шанс на выигрыш!
+"""
+
+# ============================================================
 #  ЛОГИРОВАНИЕ
 # ============================================================
 logging.basicConfig(
@@ -90,6 +114,42 @@ logger = logging.getLogger(__name__)
 
 # Храним ID пользователей, которые уже забрали бонус
 bonus_claimed_users = set()
+
+
+# ============================================================
+#  СОХРАНЕНИЕ / ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ
+# ============================================================
+def load_users() -> set:
+    """Загружает список ID пользователей из файла."""
+    try:
+        if Path(USERS_FILE).exists():
+            with open(USERS_FILE, "r") as f:
+                data = json.load(f)
+                return set(data)
+    except Exception as e:
+        logger.error(f"Ошибка загрузки пользователей: {e}")
+    return set()
+
+
+def save_users(users: set) -> None:
+    """Сохраняет список ID пользователей в файл."""
+    try:
+        with open(USERS_FILE, "w") as f:
+            json.dump(list(users), f)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения пользователей: {e}")
+
+
+# Глобальный набор ID всех пользователей бота
+all_users = load_users()
+
+
+def register_user(user_id: int) -> None:
+    """Регистрирует нового пользователя."""
+    if user_id not in all_users:
+        all_users.add(user_id)
+        save_users(all_users)
+        logger.info(f"Новый пользователь зарегистрирован: {user_id}. Всего: {len(all_users)}")
 
 
 # ============================================================
@@ -141,6 +201,14 @@ def get_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def get_mailing_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для рассылки с кнопкой 'Получить бонус'."""
+    keyboard = [
+        [InlineKeyboardButton("🎁 ПОЛУЧИТЬ БОНУС", url="https://flagmanway61.com/c8ffaea0c")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 # ============================================================
 #  ОБРАБОТЧИКИ КОМАНД
 # ============================================================
@@ -148,6 +216,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
     user = update.effective_user
     logger.info(f"Пользователь {user.full_name} ({user.id}) запустил бота")
+    
+    # Регистрируем пользователя для рассылки
+    register_user(user.id)
 
     if await is_subscribed(user.id, context):
         await update.message.reply_text(
@@ -162,6 +233,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /menu."""
     user = update.effective_user
+    register_user(user.id)
+    
     if await is_subscribed(user.id, context):
         await update.message.reply_text(
             MENU_TEXT, parse_mode="HTML", reply_markup=get_main_keyboard()
@@ -175,6 +248,8 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /bonus."""
     user = update.effective_user
+    register_user(user.id)
+    
     if await is_subscribed(user.id, context):
         bonus_claimed_users.add(user.id)
         await update.message.reply_text(
@@ -194,6 +269,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     user = query.from_user
+    register_user(user.id)
 
     # ── Проверка подписки ──
     if query.data == "check_sub":
@@ -257,6 +333,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Перехватывает любое текстовое сообщение и проверяет подписку."""
     user = update.effective_user
+    register_user(user.id)
+    
     if await is_subscribed(user.id, context):
         await update.message.reply_text(
             "Используйте /menu для навигации 😊",
@@ -266,6 +344,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(
             WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard()
         )
+
+
+# ============================================================
+#  📬 АВТОМАТИЧЕСКАЯ РАССЫЛКА КАЖДЫЕ 3 ЧАСА
+# ============================================================
+async def send_mailing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет рекламное сообщение всем пользователям бота."""
+    users = load_users()
+    if not users:
+        logger.info("Рассылка: нет пользователей")
+        return
+    
+    logger.info(f"📬 Начинаю рассылку для {len(users)} пользователей...")
+    
+    success = 0
+    failed = 0
+    blocked = []
+    
+    for user_id in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=MAILING_TEXT,
+                parse_mode="HTML",
+                reply_markup=get_mailing_keyboard(),
+                disable_web_page_preview=False,
+            )
+            success += 1
+            # Пауза чтобы не превысить лимиты Telegram API
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "blocked" in error_msg or "deactivated" in error_msg or "not found" in error_msg:
+                blocked.append(user_id)
+                logger.info(f"Пользователь {user_id} заблокировал бота — удаляю из базы")
+            else:
+                logger.error(f"Ошибка отправки для {user_id}: {e}")
+            failed += 1
+    
+    # Удаляем заблокировавших пользователей из базы
+    if blocked:
+        updated_users = users - set(blocked)
+        save_users(updated_users)
+        all_users.clear()
+        all_users.update(updated_users)
+        logger.info(f"Удалено {len(blocked)} заблокировавших пользователей")
+    
+    logger.info(f"📬 Рассылка завершена! Успешно: {success}, Ошибок: {failed}")
 
 
 # ============================================================
@@ -287,7 +413,19 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # ── Запуск автоматической рассылки каждые 3 часа ──
+    job_queue = app.job_queue
+    job_queue.run_repeating(
+        send_mailing,
+        interval=MAILING_INTERVAL,   # Каждые 3 часа (10800 секунд)
+        first=60,                     # Первая рассылка через 60 секунд после старта
+        name="mailing_3h",
+    )
+    logger.info(f"📬 Рассылка настроена: каждые {MAILING_INTERVAL // 3600} ч. {(MAILING_INTERVAL % 3600) // 60} мин.")
+
     print("🤖 Бот запущен! Нажмите Ctrl+C для остановки.")
+    print(f"📬 Рассылка каждые {MAILING_INTERVAL} секунд ({MAILING_INTERVAL // 3600} часа)")
+    print(f"👥 Пользователей в базе: {len(all_users)}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
