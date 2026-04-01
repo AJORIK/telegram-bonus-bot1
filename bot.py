@@ -1,6 +1,6 @@
 import logging
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # ================== НАСТРОЙКИ ==================
@@ -82,15 +82,13 @@ async def is_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> boo
 
 # ================== ОБРАБОТЧИКИ ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if await is_subscribed(user.id, context):
+    if await is_subscribed(update.effective_user.id, context):
         await update.message.reply_text(SUCCESS_TEXT, parse_mode="HTML", reply_markup=get_main_keyboard())
     else:
         await update.message.reply_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard())
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if await is_subscribed(user.id, context):
+    if await is_subscribed(update.effective_user.id, context):
         await update.message.reply_text(SUCCESS_TEXT, parse_mode="HTML", reply_markup=get_main_keyboard())
     else:
         await update.message.reply_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard())
@@ -98,37 +96,34 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user = query.from_user
+    user_id = query.from_user.id
 
     if query.data == "check_sub":
-        if await is_subscribed(user.id, context):
-            new_text = SUCCESS_TEXT
-            new_markup = get_main_keyboard()
+        if await is_subscribed(user_id, context):
+            new_text, new_markup = SUCCESS_TEXT, get_main_keyboard()
         else:
-            new_text = NOT_SUBSCRIBED_TEXT
-            new_markup = get_subscribe_keyboard()
+            new_text, new_markup = NOT_SUBSCRIBED_TEXT, get_subscribe_keyboard()
         if query.message.text != new_text:
             await query.edit_message_text(text=new_text, parse_mode="HTML", reply_markup=new_markup)
 
     elif query.data == "participate":
-        if not await is_subscribed(user.id, context):
+        if not await is_subscribed(user_id, context):
             await query.edit_message_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard())
             return
-        if user.id in participants:
+        if user_id in participants:
             await query.edit_message_text(ALREADY_PARTICIPATE_TEXT, parse_mode="HTML", reply_markup=get_back_keyboard())
         else:
-            participants.add(user.id)
+            participants.add(user_id)
             await query.edit_message_text(PARTICIPATE_TEXT, parse_mode="HTML", reply_markup=get_back_keyboard())
 
     elif query.data == "back_menu":
-        if await is_subscribed(user.id, context):
+        if await is_subscribed(user_id, context):
             await query.edit_message_text(SUCCESS_TEXT, parse_mode="HTML", reply_markup=get_main_keyboard())
         else:
             await query.edit_message_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard())
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if await is_subscribed(user.id, context):
+    if await is_subscribed(update.effective_user.id, context):
         await update.message.reply_text("Нажмите кнопку «УЧАВСТВОВАТЬ» для участия в конкурсе.", parse_mode="HTML")
     else:
         await update.message.reply_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=get_subscribe_keyboard())
