@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,11 +29,12 @@ all_users = set()
 def load_users():
     try:
         with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            data = json.load(f)
+            return set(data)
     except FileNotFoundError:
         return set()
     except json.JSONDecodeError:
-        logger.warning("users.json повреждён или пустой, создаю новый список пользователей")
+        logger.warning("Файл users.json поврежден или пустой. Создаю новый.")
         return set()
 
 
@@ -52,10 +53,9 @@ def register_user(user_id: int):
 all_users = load_users()
 
 
-# ================== Вспомогательные функции ==================
+# ================== Клавиатуры ==================
 def get_channel_url():
-    channel_name = CHANNEL_ID.lstrip("@")
-    return f"https://t.me/{channel_name}"
+    return f"https://t.me/{CHANNEL_ID.lstrip('@')}"
 
 
 def subscribe_keyboard():
@@ -71,33 +71,59 @@ def main_keyboard():
     ])
 
 
+# ================== Безопасное редактирование сообщения ==================
 async def safe_edit_message(query, text: str, reply_markup=None):
     try:
-        await query.edit_message_text(text=text, reply_markup=reply_markup)
+        await query.edit_message_text(
+            text=text,
+            reply_markup=reply_markup
+        )
     except BadRequest as e:
         error_text = str(e)
         if "Message is not modified" in error_text:
-            logger.info("Сообщение не изменилось, пропускаю edit_message_text")
-            await query.answer("Ничего не изменилось")
+            logger.info("Сообщение не изменилось, редактирование пропущено")
             return
         raise
 
 
 # ================== Проверка подписки ==================
-async def is_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+# Возвращает:
+# True  -> подписан
+# False -> не подписан
+# None  -> бот не смог проверить подписку
+async def is_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     try:
         member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        logger.info(f"Проверка подписки: user_id={user_id}, status={member.status}")
+
         return member.status in (
             ChatMember.MEMBER,
             ChatMember.ADMINISTRATOR,
             ChatMember.OWNER
         )
+
+    except Forbidden as e:
+        logger.warning(f"Нет доступа к каналу для проверки подписки: {e}")
+        return None
+
     except BadRequest as e:
         logger.warning(f"Ошибка проверки подписки: {e}")
-        return False
+        return None
+
     except Exception as e:
         logger.exception(f"Неожиданная ошибка проверки подписки: {e}")
-        return False
+        return None
+
+
+# ================== Тексты ==================
+SUBSCRIBED_TEXT = "✅ Вы подписаны! Нажмите УЧАВСТВОВАТЬ"
+NOT_SUBSCRIBED_TEXT = "❌ Вы не подписаны! Сначала подпишитесь."
+CHECK_ERROR_TEXT = (
+    "⚠️ Не удалось проверить подписку.\n\n"
+    "Проверьте, что бот добавлен в канал как администратор, "
+    "а CHANNEL_ID указан правильно."
+)
+PARTICIPATE_TEXT = "🎉 Теперь вы участвуете в конкурсе, результат 5 апреля!"
 
 
 # ================== Обработчики ==================
@@ -105,14 +131,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     register_user(user_id)
 
-    if await is_subscribed(user_id, context):
+    subscribed = await is_subscribed(user_id, context)
+
+    if subscribed is True:
         await update.message.reply_text(
-            "✅ Вы подписаны! Нажмите УЧАВСТВОВАТЬ",
+            SUBSCRIBED_TEXT,
             reply_markup=main_keyboard()
+        )
+    elif subscribed is False:
+        await update.message.reply_text(
+            "🎉 Подпишитесь на канал, затем нажмите «Проверить подписку».",
+            reply_markup=subscribe_keyboard()
         )
     else:
         await update.message.reply_text(
-            "🎉 Подпишитесь на канал, затем нажмите «Проверить подписку».",
+            CHECK_ERROR_TEXT,
             reply_markup=subscribe_keyboard()
         )
 
@@ -125,29 +158,45 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     register_user(user_id)
 
     if query.data == "check_sub":
-        if await is_subscribed(user_id, context):
+        subscribed = await is_subscribed(user_id, context)
+
+        if subscribed is True:
             await safe_edit_message(
                 query,
-                "✅ Вы подписаны! Нажмите УЧАВСТВОВАТЬ",
+                SUBSCRIBED_TEXT,
                 reply_markup=main_keyboard()
+            )
+        elif subscribed is False:
+            await safe_edit_message(
+                query,
+                NOT_SUBSCRIBED_TEXT,
+                reply_markup=subscribe_keyboard()
             )
         else:
             await safe_edit_message(
                 query,
-                "❌ Вы не подписаны! Сначала подпишитесь.",
+                CHECK_ERROR_TEXT,
                 reply_markup=subscribe_keyboard()
             )
 
     elif query.data == "participate":
-        if await is_subscribed(user_id, context):
+        subscribed = await is_subscribed(user_id, context)
+
+        if subscribed is True:
             await safe_edit_message(
                 query,
-                "🎉 Теперь вы участвуете в конкурсе, результат 5 апреля!"
+                PARTICIPATE_TEXT
+            )
+        elif subscribed is False:
+            await safe_edit_message(
+                query,
+                NOT_SUBSCRIBED_TEXT,
+                reply_markup=subscribe_keyboard()
             )
         else:
             await safe_edit_message(
                 query,
-                "❌ Вы не подписаны! Сначала подпишитесь.",
+                CHECK_ERROR_TEXT,
                 reply_markup=subscribe_keyboard()
             )
 
@@ -156,14 +205,21 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     register_user(user_id)
 
-    if await is_subscribed(user_id, context):
+    subscribed = await is_subscribed(user_id, context)
+
+    if subscribed is True:
         await update.message.reply_text(
             "Используйте кнопку УЧАВСТВОВАТЬ",
             reply_markup=main_keyboard()
         )
-    else:
+    elif subscribed is False:
         await update.message.reply_text(
             "Подпишитесь на канал и нажмите «Проверить подписку».",
+            reply_markup=subscribe_keyboard()
+        )
+    else:
+        await update.message.reply_text(
+            CHECK_ERROR_TEXT,
             reply_markup=subscribe_keyboard()
         )
 
@@ -174,6 +230,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== MAIN ==================
 def main():
+    logger.info(f"CHANNEL_ID = {CHANNEL_ID}")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
